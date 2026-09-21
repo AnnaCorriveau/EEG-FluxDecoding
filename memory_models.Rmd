@@ -1,0 +1,1360 @@
+---
+title: "Memory predictors GAO"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+rm(list=ls())
+
+library(lme4)
+library(sjPlot)
+library(mousetrap)
+library(rstanarm)
+library(bayesplot)
+library(ggplot2)
+library(bayestestR)
+
+library(cowplot)
+library(ggeffects)
+
+library(reticulate)
+library(brms)
+library(patchwork)
+
+
+#subs_module <- import("included_subs")
+
+#subs <- subs_module$subs
+
+subs<-c('01','02','03','04','05','06','07','08','10','12','13','14','15','17','18','20','21','22','23','24','25','26','27','28','29')
+
+subs <- subs[!subs %in% c("10")]# This subject didn't do memory task
+
+# 89% CI
+CI = c(0.055, 0.945)
+# CI = c(0.025, 0.975)
+
+set.seed(2026)
+
+```
+
+
+
+```{r}
+# Models of CPT accuracy
+
+allsub_df_cpt <- data.frame()
+
+for (sub in subs){
+  print(sub)
+
+
+df <- read.csv(paste0("/Users/annacorriveau/Library/CloudStorage/Box-Box/FluxDecoding/data/behavioral_data_withVTC/" , sub , '/' , sub , "_cpt_DF.csv"))
+#df <- df_all[grepl('animal',df_all$image),]
+df$scaled_preVTC <- scale(df$preVTC)
+df$scaled_preRT <- scale(df$preRT)
+df$scaled_dec_acc <- scale(df$dec_acc)
+allsub_df_cpt <- rbind(allsub_df_cpt, df)
+}
+
+
+allsub_df_cpt$zscore_preVTC <- scale(allsub_df_cpt$scaled_preVTC)
+allsub_df_cpt$zscore_preRT <- scale(allsub_df_cpt$scaled_preRT)
+allsub_df_cpt$zscore_dec_acc <- scale(allsub_df_cpt$scaled_dec_acc)
+
+m_cptacc <- glmer(CPT_acc ~ zscore_preRT * zscore_preVTC  + relevant_cat + (1|subject) , data=allsub_df_cpt, family='binomial')
+print(summary(m_cptacc))
+
+#does decoding accuracy predict cpt_acc?
+m_cptacc_decacc <- glmer(CPT_acc ~ zscore_dec_acc  + (1|subject) , data=allsub_df_cpt[allsub_df_cpt['relevant_cat']=='image',], family='binomial')
+print(summary(m_cptacc_decacc))
+
+
+m_cptacc <- bf(CPT_acc ~ zscore_preRT * zscore_preVTC  + relevant_cat + (1|subject))
+#print(summary(m_relevance))
+
+# Fit joint model
+fit_RTVTC <- brm(
+  m_cptacc,
+  data=allsub_df_cpt,
+  family=bernoulli(link="logit"),
+  chains = 4,
+  cores = 4,
+  iter = 10000
+)
+post_cptacc <- posterior_samples(fit_RTVTC)
+
+
+color_scheme_set("viridis")
+mcmc_areas(post_cptacc, 
+           pars = c("b_zscore_preRT", "b_zscore_preVTC", "b_relevant_catimage", "b_zscore_preRT:zscore_preVTC"), 
+           prob = 0.95)
+
+
+
+# Convert posterior draws to a data frame
+df_RTspeed <- data.frame(value = post_cptacc[, "b_zscore_preRT"])
+df_VTC <- data.frame(value = post_cptacc[, "b_zscore_preVTC"])
+df_runtype <-  data.frame(value = post_cptacc[, "b_relevant_catimage"])
+df_RTVTC <-  data.frame(value = post_cptacc[, "b_zscore_preRT:zscore_preVTC"])
+
+ci_RTspeed <- quantile(df_RTspeed$value, probs = CI)
+ci_VTC <- quantile(df_VTC$value, probs = CI)
+ci_runtype <- quantile(df_runtype$value, probs = CI)
+ci_RTVTC <- quantile(df_RTVTC$value, probs = CI)
+
+mean(df_RTspeed$value)
+mean(df_VTC$value)
+mean(df_RTVTC$value)
+mean(df_runtype$value)
+
+# Plot with ggplot2
+
+# Plot with ggplot2
+pA<- ggplot(df_RTspeed, aes(x = value)) +
+  geom_density(fill = "#71AFE2", color = "#71AFE2", alpha = 0.6, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_RTspeed[1], xend = ci_RTspeed[2], y = 0, yend = 0),
+               color = "#71AFE2", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-0.8, 0.8)) +
+  scale_y_discrete(labels = c("RT speed")) +
+  theme_minimal() +
+  labs(x = "", y = "RT speed")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+  #labs(x = "Posterior of b_zscore_preRT", y = "")
+
+pB<- ggplot(df_VTC, aes(x = value)) +
+  geom_density(fill = "#478F48", color = "#478F48", alpha = 0.6, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_VTC[1], xend = ci_VTC[2], y = 0, yend = 0),
+               color = "#478F48", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-0.8, 0.8)) +
+  scale_y_discrete(labels = c("RT variance")) +
+  theme_minimal()+
+    labs(x = "", y = "RT variance")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+pC<- ggplot(df_RTVTC, aes(x = value)) +
+  geom_density(fill = "#207068", color = "#207068", alpha = 0.6, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_RTVTC[1], xend = ci_RTVTC[2], y = 0, yend = 0),
+               color = "#207068", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-0.8, 0.8)) +
+  scale_y_discrete(labels = c("RT speed:RT variance")) +
+  theme_minimal()+
+    labs(x = "", y = "RT speed:RT variance")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+pD<- ggplot(df_runtype, aes(x = value)) +
+  geom_density(fill = "#C75900", color = "#C75900", alpha = 0.6, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_runtype[1], xend = ci_runtype[2], y = 0, yend = 0),
+               color = "#C75900", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-0.8, 0.8)) +
+  scale_y_discrete(labels = c("Run type (image)")) +
+  theme_minimal() +
+  labs(x = "Estimated Effect", y = "Run type (image)") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+  
+pA/pB/pC/pD
+  
+ggsave("/Users/annacorriveau/Library/Mobile Documents/com~apple~CloudDocs/Documents/GitHub/FluxDecoding/output/figures/R_RT_VTC_posteriors.png", width = 6, height = 4, units = "in", dpi = 300)
+
+
+plot(conditional_effects(fit_RTVTC, effects = "zscore_preRT:zscore_preVTC"))
+
+
+```
+
+```{r}
+
+m_cptacc <- bf(CPT_acc ~ zscore_preVTC  + relevant_cat + (1|subject))
+#print(summary(m_relevance))
+
+# Fit joint model
+fit_VSS <- brm(
+  m_cptacc,
+  data=allsub_df_cpt,
+  family=bernoulli(link="logit"),
+  chains = 4,
+  cores = 4,
+  iter = 10000
+)
+post_cptacc <- posterior_samples(fit_VSS)
+
+
+color_scheme_set("viridis")
+mcmc_areas(post_cptacc, 
+           pars = c("b_zscore_preVTC", "b_relevant_catimage"), 
+           prob = 0.95)
+
+
+
+# Convert posterior draws to a data frame
+df_VTC <- data.frame(value = post_cptacc[, "b_zscore_preVTC"])
+df_runtype <-  data.frame(value = post_cptacc[, "b_relevant_catimage"])
+
+ci_VTC <- quantile(df_VTC$value, probs = CI)
+ci_runtype <- quantile(df_runtype$value, probs = CI)
+
+
+# Plot with ggplot2
+
+# Plot with ggplot2
+pA<- ggplot(df_VTC, aes(x = value)) +
+  geom_density(fill = "#478F48", color = "#478F48", alpha = 0.6, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_VTC[1], xend = ci_VTC[2], y = 0, yend = 0),
+               color = "#478F48", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-0.8, 0.8)) +
+  scale_y_discrete(labels = c("Response variance")) +
+  theme_minimal() +
+  labs(x = "", y = "Response variance")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+
+
+pD<- ggplot(df_runtype, aes(x = value)) +
+  geom_density(fill = "#C75900", color = "#C75900", alpha = 0.6, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_runtype[1], xend = ci_runtype[2], y = 0, yend = 0),
+               color = "#C75900", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-0.8, 0.8)) +
+  scale_y_discrete(labels = c("Run type (image)")) +
+  theme_minimal() +
+  labs(x = "Estimated Effect", y = "Run type (image)") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+  
+pA/pD
+  
+ggsave("/Users/annacorriveau/Library/Mobile Documents/com~apple~CloudDocs/Documents/GitHub/FluxDecoding/output/figures/R_VTC_VSS.png", width = 4, height = 2, units = "in", dpi = 300)
+
+
+
+```
+
+
+
+
+
+
+
+
+
+```{r}
+# combine relevant and irrelevant memory dataframes - Does relevance predict memory?
+
+allsub_mem_df <- data.frame()
+
+for (sub in subs){
+  print(sub)
+
+
+df_rel_pre <- read.csv(paste0("/Users/annacorriveau/Library/Mobile Documents/com~apple~CloudDocs/Documents/GitHub/FluxDecoding/output/image_predicted_prob/" , sub , "_relevant_memory_decoding_accuracy_DF.csv"))
+df_rel_pre$relevance <- 1
+df_irrel_pre <- read.csv(paste0("/Users/annacorriveau/Library/Mobile Documents/com~apple~CloudDocs/Documents/GitHub/FluxDecoding/output/image_predicted_prob/" , sub , "_irrelevant_memory_decoding_accuracy_DF.csv"))
+df_irrel_pre$relevance <- 0
+
+# Remove animal trials -- they will probably have higher memory than food and vehicles but they are only in relevant runs! Thanks Nakwon for pointing this out!
+#df_rel_pre <- df_rel_pre[df_rel_pre$frequency != "infrequent", ]
+
+sub_df <- rbind(df_rel_pre, df_irrel_pre)
+sub_df$scaled_predicted_accuracy <- scale(sub_df$current_decoding_acc)
+sub_df$scaled_fa_ability <- scale(sub_df$paired_fa_ability)
+sub_df$scaled_memorability <- scale(sub_df$memorability)
+sub_df$scaled_cpt_acc <- scale(sub_df$cpt_acc)
+sub_df$scaled_preRT <- scale(sub_df$pre_RT)
+sub_df$scaled_preVTC <- scale(sub_df$pre_vtc)
+sub_df$scaled_trialN <- scale(sub_df$mem_trialN)
+sub_df$subject <- sub
+allsub_mem_df<- rbind(allsub_mem_df, sub_df)
+
+
+}
+
+allsub_mem_df$zscore_fa_ability <- scale(allsub_mem_df$scaled_fa_ability)
+allsub_mem_df$zscore_memorability <- scale(allsub_mem_df$scaled_memorability)
+allsub_mem_df$zscore_predicted_accuracy <- scale(allsub_mem_df$scaled_predicted_accuracy)
+allsub_mem_df$zscore_preRT <- scale(allsub_mem_df$scaled_preRT)
+allsub_mem_df$zscore_preVTC <- scale(allsub_mem_df$scaled_preVTC)
+allsub_mem_df$relevance <- factor(allsub_mem_df$relevance)
+allsub_mem_df$zscore_trialN <- scale(allsub_mem_df$scaled_trialN)
+
+
+
+```
+
+
+
+
+
+```{r}
+
+
+
+m_relevance <- bf(mem_acc ~ zscore_memorability + zscore_fa_ability + zscore_trialN + frequency + relevance + zscore_preRT * zscore_preVTC + (1|subject))
+#print(summary(m_relevance))
+
+# Fit joint model
+fit_mem <- brm(
+  m_relevance,
+  data=allsub_mem_df,
+  family=bernoulli(link="logit"),
+  chains = 4,
+  cores = 4,
+  iter = 10000
+)
+post_relevance <- posterior_samples(fit_mem)
+memorability_effect <- post_relevance$b_zscore_memorability
+trialN_effect <- post_relevance$b_zscore_trialN
+relevance_effect <- post_relevance$b_relevance1
+fa_ability_effect <- post_relevance$b_zscore_fa_ability
+preRT_effect <- post_relevance$b_zscore_preRT
+preVTC_effect <- post_relevance$b_zscore_preVTC
+
+
+
+mcmc_areas(post_relevance, 
+           pars = c("b_zscore_memorability", "b_zscore_fa_ability", "b_zscore_trialN", "b_relevance1", "b_frequencyinfrequent", "b_zscore_preRT", "b_zscore_preVTC", "b_zscore_preRT:zscore_preVTC"), 
+           prob = 0.95)
+
+
+# Convert posterior draws to a data frame
+df_memorability <- data.frame(value = post_relevance[, "b_zscore_memorability"])
+df_fa_ability <- data.frame(value = post_relevance[, "b_zscore_fa_ability"])
+df_trialN <- data.frame(value = post_relevance[, "b_zscore_trialN"])
+df_relevance <-  data.frame(value = post_relevance[, "b_relevance1"])
+df_frequency  <-  data.frame(value = post_relevance[, "b_frequencyinfrequent"])
+df_preRT  <-  data.frame(value = post_relevance[, "b_zscore_preRT"])
+df_preVTC  <-  data.frame(value = post_relevance[, "b_zscore_preVTC"])
+df_preRTpreVTC  <-  data.frame(value = post_relevance[, "b_zscore_preRT:zscore_preVTC"])
+
+
+ci_memorability <- quantile(df_memorability$value, probs = CI)
+ci_fa_ability <- quantile(df_fa_ability$value, probs = CI)
+ci_trialN <- quantile(df_trialN$value, probs = CI)
+ci_relevance <- quantile(df_relevance$value, probs = CI)
+ci_frequency <- quantile(df_frequency$value, probs = CI)
+ci_preRT <- quantile(df_preRT$value, probs = CI)
+ci_preVTC <- quantile(df_preVTC$value, probs = CI)
+ci_preRTpreVTC <- quantile(df_preRTpreVTC$value, probs = CI)
+
+mean(df_memorability$value)
+mean(df_fa_ability$value)
+mean(df_trialN$value)
+mean(df_relevance$value)
+mean(df_frequency$value)
+mean(df_preRT$value)
+mean(df_preVTC$value)
+mean(df_preRTpreVTC$value)
+
+mean(df_frequency$value)
+# Plot with ggplot2
+pA<- ggplot(df_memorability, aes(x = value)) +
+  geom_density(fill = "#003333", color = "#003333", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_memorability[1], xend = ci_memorability[2], y = 0, yend = 0),
+               color = "#003333", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-1.6, 1.6)) +
+  scale_y_discrete(labels = c("RT speed")) +
+  theme_minimal() +
+  labs(x = "", y = "Memorability")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+  #labs(x = "Posterior of b_zscore_preRT", y = "")
+pB<- ggplot(df_fa_ability, aes(x = value)) +
+  geom_density(fill = "#003333", color = "#003333", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_fa_ability[1], xend = ci_fa_ability[2], y = 0, yend = 0),
+               color = "#003333", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-1.6, 1.6)) +
+  scale_y_discrete(labels = c("RT speed")) +
+  theme_minimal() +
+  labs(x = "", y = "Paired FA-ability")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+pC<- ggplot(df_trialN, aes(x = value)) +
+  geom_density(fill = "#000033", color = "#000033", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_trialN[1], xend = ci_trialN[2], y = 0, yend = 0),
+               color = "#000033", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-1.6, 1.6)) +
+  scale_y_discrete(labels = c("Trial Number")) +
+  theme_minimal()+
+    labs(x = "", y = "Trial Number")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+pD<- ggplot(df_relevance, aes(x = value)) +
+  geom_density(fill = "#660066", color = "#660066", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_relevance[1], xend = ci_relevance[2], y = 0, yend = 0),
+               color = "#660066", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-1.6, 1.6)) +
+  scale_y_discrete(labels = c("Relevance")) +
+  theme_minimal() +
+  labs(x = "", y = "Relevance") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+pE<- ggplot(df_frequency, aes(x = value)) +
+  geom_density(fill = "#990066", color = "#990066", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_frequency[1], xend = ci_frequency[2], y = 0, yend = 0),
+               color = "#990066", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-1.6, 1.6)) +
+  scale_y_discrete(labels = c("Frequency (infrequent)")) +
+  theme_minimal() +
+  labs(x = "Estimated Effect", y = "Frequency (infrequent)") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+  
+pF<- ggplot(df_preRT, aes(x = value)) +
+  geom_density(fill = "#71AFE2", color = "#71AFE2", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_preRT[1], xend = ci_preRT[2], y = 0, yend = 0),
+               color = "#71AFE2", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-1.6, 1.6)) +
+  scale_y_discrete(labels = c("preRT")) +
+  theme_minimal() +
+  labs(x = "", y = "preRT") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+
+pG<- ggplot(df_preVTC, aes(x = value)) +
+  geom_density(fill = "#478F48", color = "#478F48", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_preVTC[1], xend = ci_preVTC[2], y = 0, yend = 0),
+               color = "#478F48", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-1.6, 1.6)) +
+  scale_y_discrete(labels = c("preVTC")) +
+  theme_minimal() +
+  labs(x = "", y = "preVTC") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+ 
+pH<- ggplot(df_preRTpreVTC, aes(x = value)) +
+  geom_density(fill = "#207068", color = "#207068", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_preRTpreVTC[1], xend = ci_preRTpreVTC[2], y = 0, yend = 0),
+               color = "#207068", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-1.6, 1.6)) +
+  scale_y_discrete(labels = c("preRT:preVTC")) +
+  theme_minimal() +
+  labs(x = "", y = "preRTpreVTC") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+ 
+ 
+pA/pB/pC/pD/pE/pF/pG/pH
+  
+
+ggsave("/Users/annacorriveau/Library/Mobile Documents/com~apple~CloudDocs/Documents/GitHub/FluxDecoding/output/figures/R_relevance_posteriors_preRTVTC.png", width = 6, height = 10, units = "in", dpi = 300)
+
+
+
+```
+
+
+
+```{r}
+
+
+
+
+
+m_relevance <- bf(mem_acc_thresh3 ~ zscore_memorability + zscore_fa_ability + zscore_trialN + frequency + relevance + zscore_preRT * zscore_preVTC + (1|subject))
+#print(summary(m_relevance))
+
+# Fit joint model
+fit_dec <- brm(
+  m_relevance,
+  data=allsub_mem_df,
+  family=bernoulli(link="logit"),
+  chains = 4,
+  cores = 4,
+  iter = 10000
+)
+post_relevance <- posterior_samples(fit_dec)
+memorability_effect <- post_relevance$b_zscore_memorability
+trialN_effect <- post_relevance$b_zscore_trialN
+relevance_effect <- post_relevance$b_relevance1
+fa_ability_effect <- post_relevance$b_zscore_fa_ability
+preRT_effect <- post_relevance$b_zscore_preRT
+preVTC_effect <- post_relevance$b_zscore_preVTC
+preClass_effect <- post_relevance$b_zscore_preVTC
+
+
+
+mcmc_areas(post_relevance, 
+           pars = c("b_zscore_memorability", "b_zscore_fa_ability", "b_zscore_trialN", "b_relevance1", "b_frequencyinfrequent", "b_zscore_preRT", "b_zscore_preVTC", "b_zscore_preRT:zscore_preVTC"), 
+           prob = 0.95)
+
+
+# Convert posterior draws to a data frame
+df_memorability <- data.frame(value = post_relevance[, "b_zscore_memorability"])
+df_fa_ability <- data.frame(value = post_relevance[, "b_zscore_fa_ability"])
+df_trialN <- data.frame(value = post_relevance[, "b_zscore_trialN"])
+df_relevance <-  data.frame(value = post_relevance[, "b_relevance1"])
+df_frequency  <-  data.frame(value = post_relevance[, "b_frequencyinfrequent"])
+df_preRT  <-  data.frame(value = post_relevance[, "b_zscore_preRT"])
+df_preVTC  <-  data.frame(value = post_relevance[, "b_zscore_preVTC"])
+df_preRTpreVTC  <-  data.frame(value = post_relevance[, "b_zscore_preRT:zscore_preVTC"])
+
+
+ci_memorability <- quantile(df_memorability$value, probs = CI)
+ci_fa_ability <- quantile(df_fa_ability$value, probs = CI)
+ci_trialN <- quantile(df_trialN$value, probs = CI)
+ci_relevance <- quantile(df_relevance$value, probs = CI)
+ci_frequency <- quantile(df_frequency$value, probs = CI)
+ci_preRT <- quantile(df_preRT$value, probs = CI)
+ci_preVTC <- quantile(df_preVTC$value, probs = CI)
+ci_preRTpreVTC <- quantile(df_preRTpreVTC$value, probs = CI)
+
+mean(df_memorability$value)
+mean(df_fa_ability$value)
+mean(df_trialN$value)
+mean(df_relevance$value)
+mean(df_frequency$value)
+mean(df_preRT$value)
+mean(df_preVTC$value)
+mean(df_preRTpreVTC$value)
+
+# Plot with ggplot2
+pA<- ggplot(df_memorability, aes(x = value)) +
+  geom_density(fill = "#003333", color = "#003333", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_memorability[1], xend = ci_memorability[2], y = 0, yend = 0),
+               color = "#003333", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-1.6, 1.6)) +
+  scale_y_discrete(labels = c("RT speed")) +
+  theme_minimal() +
+  labs(x = "", y = "Memorability")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+  #labs(x = "Posterior of b_zscore_preRT", y = "")
+pB<- ggplot(df_fa_ability, aes(x = value)) +
+  geom_density(fill = "#003333", color = "#003333", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_fa_ability[1], xend = ci_fa_ability[2], y = 0, yend = 0),
+               color = "#003333", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-1.6, 1.6)) +
+  scale_y_discrete(labels = c("RT speed")) +
+  theme_minimal() +
+  labs(x = "", y = "Paired FA-ability")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+pC<- ggplot(df_trialN, aes(x = value)) +
+  geom_density(fill = "#000033", color = "#000033", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_trialN[1], xend = ci_trialN[2], y = 0, yend = 0),
+               color = "#000033", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-1.6, 1.6)) +
+  scale_y_discrete(labels = c("Trial Number")) +
+  theme_minimal()+
+    labs(x = "", y = "Trial Number")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+pD<- ggplot(df_relevance, aes(x = value)) +
+  geom_density(fill = "#660066", color = "#660066", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_relevance[1], xend = ci_relevance[2], y = 0, yend = 0),
+               color = "#660066", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-1.6, 1.6)) +
+  scale_y_discrete(labels = c("Relevance")) +
+  theme_minimal() +
+  labs(x = "", y = "Relevance") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+pE<- ggplot(df_frequency, aes(x = value)) +
+  geom_density(fill = "#990066", color = "#990066", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_frequency[1], xend = ci_frequency[2], y = 0, yend = 0),
+               color = "#990066", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-1.6, 1.6)) +
+  scale_y_discrete(labels = c("Frequency (infrequent)")) +
+  theme_minimal() +
+  labs(x = "", y = "Frequency (infrequent)") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+  
+pF<- ggplot(df_preRT, aes(x = value)) +
+  geom_density(fill = "#71AFE2", color = "#71AFE2", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_preRT[1], xend = ci_preRT[2], y = 0, yend = 0),
+               color = "#71AFE2", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-1.6, 1.6)) +
+  scale_y_discrete(labels = c("preRT")) +
+  theme_minimal() +
+  labs(x = "", y = "preRT") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+
+pG<- ggplot(df_preVTC, aes(x = value)) +
+  geom_density(fill = "#478F48", color = "#478F48", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_preVTC[1], xend = ci_preVTC[2], y = 0, yend = 0),
+               color = "#478F48", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-1.6, 1.6)) +
+  scale_y_discrete(labels = c("preVTC")) +
+  theme_minimal() +
+  labs(x = "", y = "preVTC") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+ 
+pH<- ggplot(df_preRTpreVTC, aes(x = value)) +
+  geom_density(fill = "#207068", color = "#207068", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_preRTpreVTC[1], xend = ci_preRTpreVTC[2], y = 0, yend = 0),
+               color = "#207068", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-1.6, 1.6)) +
+  scale_y_discrete(labels = c("preRT:preVTC")) +
+  theme_minimal() +
+  labs(x = "Estimated Effect", y = "preRTpreVTC") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+ 
+ 
+pA/pB/pC/pD/pE/pF/pG/pH
+  
+
+ggsave("/Users/annacorriveau/Library/Mobile Documents/com~apple~CloudDocs/Documents/GitHub/FluxDecoding/output/figures/R_relevance_posteriors_preRTVTC_thresh3.png", width = 6, height = 10, units = "in", dpi = 300)
+
+
+
+```
+
+
+
+
+```{r}
+
+
+
+
+allsub_df_cpt <- data.frame()
+
+for (sub in subs){
+  print(sub)
+
+
+df_pre <- read.csv(paste0("/Users/annacorriveau/Library/CloudStorage/Box-Box/FluxDecoding/output/image_predicted_prob/" , sub , "_relevant_memory_decoding_accuracy_DF.csv"))
+df <- df_pre[df_pre$frequency=='infrequent',]
+df$scaled_predicted_accuracy <- scale(df$pre_classification_acc)
+df$scaled_predicted_accuracy_binary <- scale(df$pre_acc_binary)
+df$scaled_memorability <- scale(df$memorability)
+df$scaled_fa_ability <- scale(df$paired_fa_ability)
+
+df$scaled_preRT <- scale(df$pre_RT)
+df$scaled_preVTC <- scale(df$pre_vtc)
+
+
+df$scaled_cpt_acc <- scale(df$cpt_acc)
+df$scaled_trialN <- scale(df$mem_trialN)
+
+df$subject <- sub
+allsub_df_cpt <- rbind(allsub_df_cpt, df)
+}
+
+allsub_df_cpt$cpt_scale <- scale(allsub_df_cpt$cpt_acc)
+allsub_df_cpt$zscore_trialN <- scale(allsub_df_cpt$scaled_trialN)
+allsub_df_cpt$zscore_memorability <- scale(allsub_df_cpt$scaled_memorability)
+allsub_df_cpt$zscore_fa_ability <- scale(allsub_df_cpt$scaled_fa_ability)
+
+allsub_df_cpt$zscore_predicted_accuracy <- scale(allsub_df_cpt$scaled_predicted_accuracy)
+
+allsub_df_cpt$zscore_accuracy_binary <- scale(allsub_df_cpt$scaled_predicted_accuracy_binary)
+allsub_df_cpt$zscore_cpt_acc <- scale(allsub_df_cpt$scaled_cpt_acc)
+allsub_df_cpt$zscore_preRT <- scale(allsub_df_cpt$scaled_preRT)
+allsub_df_cpt$zscore_preVTC <- scale(allsub_df_cpt$scaled_preVTC)
+
+#m_mem_cptacc <- glmer(mem_acc ~ zscore_cpt_acc*zscore_predicted_accuracy + zscore_memorability+ zscore_trialN + (1|subject) , data=allsub_df_cpt, family='binomial')
+
+#print(summary(m_mem_cptacc))
+
+#m_cptacc_acc <- glmer(cpt_acc ~ zscore_predicted_accuracy + zscore_memorability + zscore_trialN + (1|subject) , data=allsub_df_cpt, family='binomial')
+#print(summary(m_cptacc_acc))
+
+
+
+#m_relmem_acc <- glmer(mem_acc ~ zscore_predicted_accuracy + zscore_memorability + zscore_trialN + (1|subject) , data=allsub_df_cpt, family='binomial')
+#print(summary(m_relmem_acc))
+
+#m_relmem_binary <- glmer(mem_acc ~ zscore_accuracy_binary+ zscore_memorability + zscore_trialN + (1|subject) , data=allsub_df_cpt, family='binomial')
+#print(summary(m_relmem_binary))
+
+allsub_df_cpt$mem_acc <- as.numeric(allsub_df_cpt$mem_acc)
+allsub_df_cpt$subject <- as.factor(allsub_df_cpt$subject)
+
+
+
+
+
+#m_relmem_acc <- bf(mem_acc ~ zscore_predicted_accuracy + zscore_cpt_acc  + zscore_memorability +  zscore_fa_ability + zscore_trialN + (1|subject))
+m_relmem_acc <- bf(mem_acc ~ zscore_predicted_accuracy + zscore_memorability +  zscore_fa_ability + zscore_trialN + (1|subject))
+#print(summary(m_relevance))
+
+# Fit joint model
+fit_EEG <- brm(
+  m_relmem_acc,
+  data=allsub_df_cpt,
+  family=bernoulli(link="logit"),
+  chains = 4,
+  cores = 4,
+  iter = 10000
+)
+
+
+post_relmem_acc <- posterior_samples(fit_EEG)
+EEG_effect <- post_relmem_acc$b_zscore_predicted_accuracy
+trialN_effect <- post_relmem_acc$b_zscore_trialN
+memorability_effect <- post_relmem_acc$b_zscore_memorability
+fa_ability_effect <- post_relmem_acc$b_zscore_fa_ability
+cpt_acc_effect <- post_relmem_acc$b_zscore_cpt_acc
+
+
+# Convert posterior draws to a data frame
+df_memorability <- data.frame(value = post_relmem_acc[, "b_zscore_memorability"])
+df_fa_ability <- data.frame(value = post_relmem_acc[, "b_zscore_fa_ability"])
+df_trialN <- data.frame(value = post_relmem_acc[, "b_zscore_trialN"])
+df_EEG <-  data.frame(value = post_relmem_acc[, "b_zscore_predicted_accuracy"])
+#df_cpt_acc <-  data.frame(value = post_relmem_acc[, "b_zscore_cpt_acc"])
+
+ci_fa_ability <- quantile(df_fa_ability$value, probs =CI)
+ci_memorability <- quantile(df_memorability$value, probs = CI)
+ci_trialN <- quantile(df_trialN$value, probs = CI)
+ci_EEG <- quantile(df_EEG$value, probs = CI)
+#ci_cpt_acc <- quantile(df_cpt_acc$value, probs = CI)
+
+mean(df_memorability$value)
+mean(df_fa_ability$value)
+mean(df_trialN$value)
+mean(df_EEG$value)
+#mean(df_cpt_acc$value)
+# Plot with ggplot2
+
+pA<- ggplot(df_memorability, aes(x = value)) +
+  geom_density(fill = "#003333", color = "#003333", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_memorability[1], xend = ci_memorability[2], y = 0, yend = 0),
+               color = "#003333", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-.5, .5)) +
+      scale_y_discrete(labels = c("Memorability")) +
+  theme_minimal() +
+  labs(x = "", y = "Memorability")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+  #labs(x = "Posterior of b_zscore_preRT", y = "")
+
+pB<- ggplot(df_trialN, aes(x = value)) +
+  geom_density(fill = "#000033", color = "#000033", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_trialN[1], xend = ci_trialN[2], y = 0, yend = 0),
+               color = "#000033", size = 2) +
+  scale_x_continuous(limits = c(-.5, .5)) +
+    scale_y_discrete(labels = c("Trial Number")) +
+  theme_minimal()+
+    labs(x = "", y = "Trial Number")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+pC<- ggplot(df_EEG, aes(x = value)) +
+  geom_density(fill = "#990000", color = "#990000", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_EEG[1], xend = ci_EEG[2], y = 0, yend = 0),
+               color = "#990000", size = 2) +
+  scale_x_continuous(limits = c(-.5, .5)) +
+  scale_y_discrete(labels = c("EEG confidence")) +
+  theme_minimal() +
+  labs(x = "", y = "EEG confidence") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+  
+pD<- ggplot(df_fa_ability, aes(x = value)) +
+  geom_density(fill = "#995500", color = "#995500", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_fa_ability[1], xend = ci_fa_ability[2], y = 0, yend = 0),
+               color = "#995500", size = 2) +
+  scale_x_continuous(limits = c(-.5, .5)) +
+  scale_y_discrete(labels = c("Paired FA-ability")) +
+  theme_minimal() +
+  labs(x = "", y = "Paired FA-ability") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+  
+#pE<- ggplot(df_cpt_acc, aes(x = value)) +
+#  geom_density(fill = "#995544", color = "#995544", alpha = 0.5, size = 1) +
+#  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+#  geom_segment(aes(x = ci_cpt_acc[1], xend = ci_cpt_acc[2], y = 0, yend = 0),
+#               color = "#995544", size = 2) +
+#  scale_x_continuous(limits = c(-.2, .2)) +
+#  scale_y_discrete(labels = c("Infrequent CPT trial accuracy")) +
+#  theme_minimal() +
+#  labs(x = "Estimated Effect", y = "Infrequent CPT trial accuracy") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+  
+
+pC/pA/pD/pB
+  
+
+ggsave("/Users/annacorriveau/Library/Mobile Documents/com~apple~CloudDocs/Documents/GitHub/FluxDecoding/output/figures/R_EEG_Lapses_posteriors.png", width = 6, height = 4, units = "in", dpi = 300)
+
+
+
+#m_cpt_decacc <- glmer(cpt_acc ~ zscore_predicted_accuracy + (1|subject) , data=allsub_df_cpt, family='binomial')
+#print(summary(m_cpt_decacc))
+
+
+#m_mem_decacc <- glmer(mem_acc ~ zscore_predicted_accuracy + zscore_preRT*zscore_preVTC + (1|subject) , data=allsub_df_cpt, family='binomial')
+#print(summary(m_mem_decacc))
+```
+
+```{r}
+
+m_relmem_acc_cpt <- bf(mem_acc ~ zscore_predicted_accuracy + zscore_cpt_acc  + zscore_memorability +  zscore_fa_ability + zscore_trialN + (1|subject))
+#m_relmem_acc <- bf(mem_acc ~ zscore_predicted_accuracy + zscore_memorability +  zscore_fa_ability + zscore_trialN + (1|subject))
+#print(summary(m_relevance))
+
+# Fit joint model
+fit_EEG_cpt <- brm(
+  m_relmem_acc_cpt,
+  data=allsub_df_cpt,
+  family=bernoulli(link="logit"),
+  chains = 4,
+  cores = 4,
+  iter = 10000
+)
+
+
+post_relmem_acc_cpt <- posterior_samples(fit_EEG_cpt)
+EEG_effect <- post_relmem_acc_cpt$b_zscore_predicted_accuracy
+trialN_effect <- post_relmem_acc_cpt$b_zscore_trialN
+memorability_effect <- post_relmem_acc_cpt$b_zscore_memorability
+fa_ability_effect <- post_relmem_acc_cpt$b_zscore_fa_ability
+cpt_acc_effect <- post_relmem_acc_cpt$b_zscore_cpt_acc
+
+
+# Convert posterior draws to a data frame
+df_memorability <- data.frame(value = post_relmem_acc_cpt[, "b_zscore_memorability"])
+df_fa_ability <- data.frame(value = post_relmem_acc_cpt[, "b_zscore_fa_ability"])
+df_trialN <- data.frame(value = post_relmem_acc_cpt[, "b_zscore_trialN"])
+df_EEG <-  data.frame(value = post_relmem_acc_cpt[, "b_zscore_predicted_accuracy"])
+df_cpt_acc <-  data.frame(value = post_relmem_acc_cpt[, "b_zscore_cpt_acc"])
+
+
+ci_fa_ability <- quantile(df_fa_ability$value, probs =CI)
+ci_memorability <- quantile(df_memorability$value, probs = CI)
+ci_trialN <- quantile(df_trialN$value, probs = CI)
+ci_EEG <- quantile(df_EEG$value, probs = CI)
+ci_cpt_acc <- quantile(df_cpt_acc$value, probs = CI)
+
+mean(df_memorability$value)
+mean(df_fa_ability$value)
+mean(df_trialN$value)
+mean(df_EEG$value)
+mean(df_cpt_acc$value)
+# Plot with ggplot2
+
+
+
+
+
+```
+
+
+```{r}
+
+m_relmem_acc <- bf(mem_acc_thresh3 ~ zscore_predicted_accuracy + zscore_memorability +  zscore_fa_ability + zscore_trialN + (1|subject))
+#print(summary(m_relevance))
+
+# Fit joint model
+fit_EEGb <- brm(
+  m_relmem_acc,
+  data=allsub_df_cpt,
+  family=bernoulli(link="logit"),
+  chains = 4,
+  cores = 4,
+  iter = 10000
+)
+
+
+post_relmem_acc <- posterior_samples(fit_EEGb)
+EEG_effect <- post_relmem_acc$b_zscore_predicted_accuracy
+trialN_effect <- post_relmem_acc$b_zscore_trialN
+memorability_effect <- post_relmem_acc$b_zscore_memorability
+fa_ability_effect <- post_relmem_acc$b_zscore_fa_ability
+#cpt_acc_effect <- post_relmem_acc$b_zscore_cpt_acc
+
+
+# Convert posterior draws to a data frame
+df_memorability <- data.frame(value = post_relmem_acc[, "b_zscore_memorability"])
+df_fa_ability <- data.frame(value = post_relmem_acc[, "b_zscore_fa_ability"])
+df_trialN <- data.frame(value = post_relmem_acc[, "b_zscore_trialN"])
+df_EEG <-  data.frame(value = post_relmem_acc[, "b_zscore_predicted_accuracy"])
+#df_cpt_acc <-  data.frame(value = post_relmem_acc[, "b_zscore_cpt_acc"])
+
+ci_fa_ability <- quantile(df_fa_ability$value, probs = CI)
+ci_memorability <- quantile(df_memorability$value, probs = CI)
+ci_trialN <- quantile(df_trialN$value, probs = CI)
+ci_EEG <- quantile(df_EEG$value, probs = CI)
+#ci_cpt_acc <- quantile(df_cpt_acc$value, probs = CI)
+
+mean(df_memorability$value)
+mean(df_fa_ability$value)
+mean(df_trialN$value)
+mean(df_EEG$value)
+#mean(df_cpt_acc$value)
+# Plot with ggplot2
+
+pA<- ggplot(df_memorability, aes(x = value)) +
+  geom_density(fill = "#003333", color = "#003333", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_memorability[1], xend = ci_memorability[2], y = 0, yend = 0),
+               color = "#003333", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-.2, .2)) +
+      scale_y_discrete(labels = c("Memorability")) +
+  theme_minimal() +
+  labs(x = "", y = "Memorability")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+  #labs(x = "Posterior of b_zscore_preRT", y = "")
+
+pB<- ggplot(df_trialN, aes(x = value)) +
+  geom_density(fill = "#000033", color = "#000033", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_trialN[1], xend = ci_trialN[2], y = 0, yend = 0),
+               color = "#000033", size = 2) +
+  scale_x_continuous(limits = c(-.2, .2)) +
+    scale_y_discrete(labels = c("Trial Number")) +
+  theme_minimal()+
+    labs(x = "", y = "Trial Number")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+pC<- ggplot(df_EEG, aes(x = value)) +
+  geom_density(fill = "#990000", color = "#990000", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_EEG[1], xend = ci_EEG[2], y = 0, yend = 0),
+               color = "#990000", size = 2) +
+  scale_x_continuous(limits = c(-.2, .2)) +
+  scale_y_discrete(labels = c("EEG confidence")) +
+  theme_minimal() +
+  labs(x = "Estimated effect", y = "EEG confidence") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+  
+pD<- ggplot(df_fa_ability, aes(x = value)) +
+  geom_density(fill = "#995500", color = "#995500", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_fa_ability[1], xend = ci_fa_ability[2], y = 0, yend = 0),
+               color = "#995500", size = 2) +
+  scale_x_continuous(limits = c(-.2, .2)) +
+  scale_y_discrete(labels = c("Paired FA-ability")) +
+  theme_minimal() +
+  labs(x = "", y = "Paired FA-ability") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+  
+pE<- ggplot(df_cpt_acc, aes(x = value)) +
+  geom_density(fill = "#995544", color = "#995544", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_cpt_acc[1], xend = ci_cpt_acc[2], y = 0, yend = 0),
+               color = "#995544", size = 2) +
+  scale_x_continuous(limits = c(-.2, .2)) +
+  scale_y_discrete(labels = c("Infrequent CPT trial accuracy")) +
+  theme_minimal() +
+  labs(x = "", y = "Infrequent CPT trial accuracy") + theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+  
+  
+
+pA/pC/pD/pB/pE
+  
+
+ggsave("/Users/annacorriveau/Library/Mobile Documents/com~apple~CloudDocs/Documents/GitHub/FluxDecoding/output/figures/R_EEG_Lapses_posteriors_cptacc_thresh3.png", width = 6, height = 4, units = "in", dpi = 300)
+
+
+
+
+
+
+```
+
+
+
+
+
+```{r}
+
+df_pre <- read.csv(paste0("/Users/annacorriveau/Library/CloudStorage/Box-Box/FluxDecoding/output/image_decoding/DF_relevance_by_zone_GLM.csv"))
+df_pre$relevance <- as.factor(df_pre$relevance)
+df_pre$zone <- as.factor(df_pre$zone)
+
+rel_zone_GLM <-glm(mean_decoding~relevance*zone, data=df_pre)
+summary(rel_zone_GLM)
+
+
+fit_mdl <- brm(mean_decoding~relevance*zone, data=df_pre, family="gaussian")
+
+plot_model(rel_zone_GLM, type = "int", terms = c("relevance", "zone"))
+plot_model(rel_zone_GLM, type = "pred", terms = c("relevance", "zone"))
+
+plot_model(rel_zone_GLM, type = "pred", terms = c("zone"))
+plot_model(rel_zone_GLM, type = "pred", terms = c("relevance"))
+
+
+
+
+post_rel_zone <- posterior_samples(fit_mdl)
+
+
+
+# Convert posterior draws to a data frame
+df_zone <- data.frame(value = post_rel_zone[, "b_zoneout"])
+df_rel <- data.frame(value = post_rel_zone[, "b_relevancerel"])
+df_int <- data.frame(value = post_rel_zone[, "b_relevancerel:zoneout"])
+
+
+ci_zone <- quantile(df_zone$value, probs = CI)
+ci_rel <- quantile(df_rel$value, probs = CI)
+ci_int <- quantile(df_int$value, probs = CI)
+
+
+mean(df_zone$value)
+mean(df_rel$value)
+mean(df_int$value)
+
+conditional_effects(fit_mdl, effects = "zone:relevance")
+
+
+```
+
+
+
+```{r}
+
+
+library(lmerTest)
+allsub_df_cpt <- data.frame()
+
+for (sub in subs){
+  print(sub)
+
+# check if decoding accuracy still predicts cpt accuracy, controlling for rt speed and variance
+df <- read.csv(paste0("/Users/annacorriveau/Library/CloudStorage/Box-Box/FluxDecoding/data/behavioral_data_withVTC/" , sub , '/' , sub , "_cpt_DF.csv"))
+df$scaled_preVTC <- scale(df$preVTC)
+df$scaled_preRT <- scale(df$preRT)
+df$scaled_dec_acc <- scale(df$dec_acc)
+df$scaled_cpt_acc <- scale(df$CPT_acc)
+allsub_df_cpt <- rbind(allsub_df_cpt, df)
+
+
+}
+
+
+allsub_df_cpt$zscore_preVTC <- scale(allsub_df_cpt$scaled_preVTC)
+allsub_df_cpt$zscore_preRT <- scale(allsub_df_cpt$scaled_preRT)
+allsub_df_cpt$zscore_dec_acc <- scale(allsub_df_cpt$scaled_dec_acc)
+allsub_df_cpt$zscore_cpt_acc <- scale(allsub_df_cpt$scaled_cpt_acc)
+allsub_df_cpt$relevance <- ifelse(allsub_df_cpt['relevant_cat']=='image', 'relevant','irrelevant')
+allsub_df_cpt$COCE_zone <- as.factor(allsub_df_cpt$CPT_acc)
+#does decoding accuracy predict cpt_acc?
+
+
+m_cptacc_trial <- lmer(dec_acc ~ COCE_zone + (1|subject), data=allsub_df_cpt)
+print(summary(m_cptacc_trial))
+
+
+m_rel_zone <- bf(dec_acc ~ COCE_zone * relevance + (1|subject))
+#print(summary(m_relevance))
+
+# Fit joint model
+fit_rel_zone <- brm(
+  m_rel_zone,
+  data=allsub_df_cpt,
+  #family=bernoulli(link="logit"),
+  chains = 4,
+  cores = 4,
+  iter = 10000
+)
+
+
+post_rel_zone <- posterior_samples(fit_rel_zone)
+
+
+
+# Convert posterior draws to a data frame
+df_zone <- data.frame(value = post_rel_zone[, "b_COCE_zone1"])
+df_rel <- data.frame(value = post_rel_zone[, "b_relevancerelevant"])
+df_int <- data.frame(value = post_rel_zone[, "b_COCE_zone1:relevancerelevant"])
+
+
+ci_zone <- quantile(df_zone$value, probs = CI)
+ci_rel <- quantile(df_rel$value, probs = CI)
+ci_int <- quantile(df_int$value, probs = CI)
+
+
+mean(df_zone$value)
+mean(df_rel$value)
+mean(df_int$value)
+
+
+
+pA<- ggplot(df_zone, aes(x = value)) +
+  geom_density(fill = "#71AFE2", color = "#71AFE2", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_zone[1], xend = ci_zone[2], y = 0, yend = 0),
+               color = "#71AFE2", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-.02, .02)) +
+      scale_y_discrete(labels = c("preRT")) +
+  theme_minimal() +
+  labs(x = "", y = "zone")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+pB<- ggplot(df_rel, aes(x = value)) +
+  geom_density(fill = "#478F48", color = "#478F48", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_rel[1], xend = ci_rel[2], y = 0, yend = 0),
+               color = "#478F48", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-.02, .02)) +
+      scale_y_discrete(labels = c("preVTC")) +
+  theme_minimal() +
+  labs(x = "", y = "relevance")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+pC<- ggplot(df_int, aes(x = value)) +
+  geom_density(fill = "#888F48", color = "#888F48", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_int[1], xend = ci_int[2], y = 0, yend = 0),
+               color = "#888F48", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-.02, .02)) +
+      scale_y_discrete(labels = c("interaction")) +
+  theme_minimal() +
+  labs(x = "", y = "interaction")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+
+
+
+pA/pB/pC
+
+conditional_effects(fit_rel_zone, effects = "COCE_zone:relevance")
+
+
+
+
+```
+
+
+
+
+
+```{r}
+
+library(lmerTest)
+df_pre <- read.csv(paste0("/Users/annacorriveau/Library/CloudStorage/Box-Box/FluxDecoding/output/image_decoding/DF_alpha_decoding_GLM.csv"))
+df_pre$zone <- as.factor(df_pre$zone)
+df_pre$zone_numeric <- ifelse(df_pre$zone=='in', 1, 0)
+
+df_normalized <- scale_within(
+  data = df_pre, 
+  variables = c("alpha","decoding"), 
+  within = "sub",
+  prefix = "scaled_"        # Optional: Prefixes new column name instead of overwriting
+)
+
+df_normalized$scaled_alpha<- scale(df_normalized$scaled_alpha)
+df_normalized$scaled_decoding<- scale(df_normalized$scaled_decoding)
+
+fit_alpha_m <- glmer(scaled_decoding ~ zone_numeric + scaled_alpha + (1|sub), data = df_normalized)
+summary(fit_alpha_m)
+
+fit_alpha_m <- glmer(zone_numeric ~  scaled_alpha + (1|sub), data = df_normalized, family='binomial')
+summary(fit_alpha_m)
+
+
+m_alpha <- bf(scaled_decoding ~ zone_numeric + scaled_alpha + (1|sub))
+#print(summary(m_relevance))
+
+
+# Fit joint model
+fit_alpha <- brm(
+  m_alpha,
+  data=df_normalized,
+  #family=bernoulli(link="logit"),
+  chains = 4,
+  cores = 4,
+  iter = 10000
+)
+
+
+
+post_alpha <- posterior_samples(fit_alpha)
+zone_effect <- post_alpha$b_zoneout
+alpha_effect <- post_alpha$b_scaled_alpha
+
+
+
+# Convert posterior draws to a data frame
+df_zone <- data.frame(value = post_alpha[, "b_zone_numeric"])
+df_alpha <- data.frame(value = post_alpha[, "b_scaled_alpha"])
+#df_int <- data.frame(value = post_alpha[, "b_zone_numeric:scaled_alpha"])
+
+
+ci_zone <- quantile(df_zone$value, probs = CI)
+ci_alpha <- quantile(df_alpha$value, probs = CI)
+#ci_int <- quantile(df_int$value, probs = CI)
+
+
+mean(df_zone$value)
+mean(df_alpha$value)
+#mean(df_int$value)
+
+
+pA<- ggplot(df_alpha, aes(x = value)) +
+  geom_density(fill = "#003333", color = "#003333", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_alpha[1], xend = ci_alpha[2], y = 0, yend = 0),
+               color = "#003333", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-.2, .2)) +
+      scale_y_discrete(labels = c("alpha")) +
+  theme_minimal() +
+  labs(x = "", y = "alpha")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+pB<- ggplot(df_zone, aes(x = value)) +
+  geom_density(fill = "#553355", color = "#553355", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_zone[1], xend = ci_zone[2], y = 0, yend = 0),
+               color = "#553355", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-.2, .2)) +
+      scale_y_discrete(labels = c("zone")) +
+  theme_minimal() +
+  labs(x = "", y = "zone")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+pA/pB
+
+```
+
+
+```{r}
+
+# Predict decoding accuracy!! not CPT accuracy
+
+
+library(lmerTest)
+allsub_df_cpt <- data.frame()
+
+for (sub in subs){
+  print(sub)
+
+# check if decoding accuracy still predicts cpt accuracy, controlling for rt speed and variance
+df <- read.csv(paste0("/Users/annacorriveau/Library/CloudStorage/Box-Box/FluxDecoding/data/behavioral_data_withVTC/" , sub , '/' , sub , "_cpt_DF.csv"))
+df <- df[df['relevant_cat']=='image',]
+df$scaled_preVTC <- scale(df$preVTC)
+df$scaled_preRT <- scale(df$preRT)
+df$scaled_dec_acc <- scale(df$dec_acc)
+df$scaled_cpt_acc <- scale(df$CPT_acc)
+allsub_df_cpt <- rbind(allsub_df_cpt, df)
+}
+
+
+allsub_df_cpt$zscore_preVTC <- scale(allsub_df_cpt$scaled_preVTC)
+allsub_df_cpt$zscore_preRT <- scale(allsub_df_cpt$scaled_preRT)
+allsub_df_cpt$zscore_dec_acc <- scale(allsub_df_cpt$scaled_dec_acc)
+allsub_df_cpt$zscore_cpt_acc <- scale(allsub_df_cpt$scaled_cpt_acc)
+
+#does decoding accuracy predict cpt_acc?
+m_cptacc_decacc <- glmer(CPT_acc ~ zscore_dec_acc + nTrial + (1|subject) , data=allsub_df_cpt[allsub_df_cpt['relevant_cat']=='image',], family='binomial')
+print(summary(m_cptacc_decacc))
+
+m_cptacc_trial <- lmer(zscore_dec_acc ~ CPT_acc + nTrial + (1|subject), data=allsub_df_cpt)
+print(summary(m_cptacc_trial))
+
+
+m_cptacc_decacc <- bf(zscore_dec_acc ~ CPT_acc + zscore_preRT * zscore_preVTC + (1|subject))
+#print(summary(m_relevance))
+
+# Fit joint model
+fit_RTVTC_decacc <- brm(
+  m_cptacc_decacc,
+  data=allsub_df_cpt,
+  #family=bernoulli(link="logit"),
+  chains = 4,
+  cores = 4,
+  iter = 10000
+)
+
+
+post_cptacc_decacc <- posterior_samples(fit_RTVTC_decacc)
+
+
+
+# Convert posterior draws to a data frame
+df_cpt_acc <- data.frame(value = post_cptacc_decacc[, "b_CPT_acc"])
+df_preRT <- data.frame(value = post_cptacc_decacc[, "b_zscore_preRT"])
+df_preVTC <- data.frame(value = post_cptacc_decacc[, "b_zscore_preVTC"])
+df_int <- data.frame(value = post_cptacc_decacc[, "b_zscore_preRT:zscore_preVTC"])
+
+
+ci_cpt <- quantile(df_cpt_acc$value, probs = CI)
+ci_preRT <- quantile(df_preRT$value, probs = CI)
+ci_preVTC <- quantile(df_preVTC$value, probs = CI)
+ci_int <- quantile(df_int$value, probs = CI)
+
+
+mean(df_cpt_acc$value)
+mean(df_preRT$value)
+mean(df_preVTC$value)
+mean(df_int$value)
+
+
+
+pA<- ggplot(df_preRT, aes(x = value)) +
+  geom_density(fill = "#71AFE2", color = "#71AFE2", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_preRT[1], xend = ci_preRT[2], y = 0, yend = 0),
+               color = "#71AFE2", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-.3, .3)) +
+      scale_y_discrete(labels = c("preRT")) +
+  theme_minimal() +
+  labs(x = "", y = "preRT")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+pB<- ggplot(df_preVTC, aes(x = value)) +
+  geom_density(fill = "#478F48", color = "#478F48", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_preVTC[1], xend = ci_preVTC[2], y = 0, yend = 0),
+               color = "#478F48", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-.3, .3)) +
+      scale_y_discrete(labels = c("preVTC")) +
+  theme_minimal() +
+  labs(x = "", y = "preVTC")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+pC<- ggplot(df_cpt_acc, aes(x = value)) +
+  geom_density(fill = "#553355", color = "#553355", alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_segment(aes(x = ci_cpt[1], xend = ci_cpt[2], y = 0, yend = 0),
+               color = "#553355", size = 2) +  # 95% CI line
+  scale_x_continuous(limits = c(-.3, .3)) +
+      scale_y_discrete(labels = c("CPT acc")) +
+  theme_minimal() +
+  labs(x = "", y = "CPT acc")+ theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+pA/pB/pC
+
+
+
+
+
+
+
+
+
+m_cptacc_trial <- lmer(zscore_dec_acc ~ CPT_acc + nTrial + (1|subject), data=allsub_df_cpt)
+print(summary(m_cptacc_trial))
+
+
+m_cptacc_trial <- bf(zscore_dec_acc ~ CPT_acc + nTrial + (1|subject))
+#print(summary(m_relevance))
+
+# Fit joint model
+fit_trial <- brm(
+  m_cptacc_trial,
+  data=allsub_df_cpt,
+  #family=bernoulli(link="logit"),
+  chains = 4,
+  cores = 4,
+  iter = 10000
+)
+
+
+post_cptacc_trial <- posterior_samples(fit_trial)
+
+
+
+# Convert posterior draws to a data frame
+df_cptacc <- data.frame(value = post_cptacc_trial[, "b_CPT_acc"])
+df_trial <- data.frame(value = post_cptacc_trial[, "b_nTrial"])
+
+
+ci_cpt <- quantile(df_cptacc$value, probs = CI)
+ci_trial <- quantile(df_trial$value, probs = CI)
+
+
+
+mean(df_cptacc$value)
+mean(df_trial$value)
+
+
+```
+
+
+
+
+
